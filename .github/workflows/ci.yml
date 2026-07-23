@@ -1,0 +1,233 @@
+name: Pull Request Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  TERRAFORM_VERSION: "1.10.5"
+  IMAGE_NAME: rightmo-application
+  IMAGE_TAG: ci-${{ github.sha }}
+
+jobs:
+  application-test:
+    name: Application Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: app
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            app/requirements.txt
+            app/requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Lint application
+        run: |
+          ruff check src tests
+
+      - name: Run tests
+        run: |
+          pytest \
+            --verbose \
+            --cov=src \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --cov-fail-under=80
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: application-coverage
+          path: app/coverage.xml
+          retention-days: 14
+
+  container-test:
+    name: Container Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: app
+          file: app/Dockerfile
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify container user
+        run: |
+          configured_user="$(
+            docker image inspect \
+              "${IMAGE_NAME}:${IMAGE_TAG}" \
+              --format '{{.Config.User}}'
+          )"
+
+          echo "Configured user: ${configured_user}"
+
+          if [[ -z "${configured_user}" ||
+                "${configured_user}" == "0" ||
+                "${configured_user}" == "root" ]]; then
+            echo "Container must not run as root."
+            exit 1
+          fi
+
+      - name: Start hardened container
+        run: |
+          docker run \
+            --detach \
+            --name rightmo-ci \
+            --publish 8080:8080 \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            "${IMAGE_NAME}:${IMAGE_TAG}"
+
+      - name: Wait for health endpoint
+        run: |
+          for attempt in {1..30}; do
+            if curl \
+              --silent \
+              --show-error \
+              --fail \
+              http://127.0.0.1:8080/health; then
+
+              echo "Container is healthy."
+              exit 0
+            fi
+
+            echo "Waiting for container: ${attempt}/30"
+            sleep 2
+          done
+
+          docker logs rightmo-ci
+          exit 1
+
+      - name: Verify non-root runtime
+        run: |
+          runtime_uid="$(docker exec rightmo-ci id -u)"
+
+          if [[ "${runtime_uid}" == "0" ]]; then
+            echo "Container is running as root."
+            exit 1
+          fi
+
+      - name: Stop test container
+        if: always()
+        run: |
+          docker logs rightmo-ci || true
+          docker rm --force rightmo-ci || true
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+
+  terraform-validation:
+    name: Terraform Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - terraform/bootstrap
+          - terraform/modules/networking
+          - terraform/modules/security
+          - terraform/modules/ecr
+          - terraform/modules/ecs-cluster
+          - terraform/modules/alb
+          - terraform/modules/ecs-service
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive terraform
+
+      - name: Initialize module
+        working-directory: ${{ matrix.module }}
+        run: terraform init -backend=false
+
+      - name: Validate module
+        working-directory: ${{ matrix.module }}
+        run: terraform validate
+
+  infrastructure-security:
+    name: Infrastructure Security
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Scan Terraform configuration
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: terraform
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          hide-progress: true
+
+      - name: Scan repository for secrets
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: filesystem
+          scan-ref: .
+          scanners: secret
+          format: table
+          exit-code: "1"
+          hide-progress: true

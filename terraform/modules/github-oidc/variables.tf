@@ -91,3 +91,13 @@ variable "common_tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "github_owner_id" {
+  description = "Immutable numeric GitHub owner ID used in the OIDC subject."
+  type        = string
+}
+
+variable "github_repository_id" {
+  description = "Immutable numeric GitHub repository ID used in the OIDC subject."
+  type        = string
+}

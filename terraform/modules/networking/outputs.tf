@@ -1,0 +1,69 @@
+output "vpc_id" {
+  description = "ID of the created VPC."
+  value       = aws_vpc.main.id
+}
+
+output "vpc_arn" {
+  description = "ARN of the created VPC."
+  value       = aws_vpc.main.arn
+}
+
+output "vpc_cidr_block" {
+  description = "CIDR block of the VPC."
+  value       = aws_vpc.main.cidr_block
+}
+
+output "public_subnet_ids" {
+  description = "IDs of the public subnets."
+  value       = aws_subnet.public[*].id
+}
+
+output "private_app_subnet_ids" {
+  description = "IDs of the private application subnets."
+  value       = aws_subnet.private_app[*].id
+}
+
+output "private_db_subnet_ids" {
+  description = "IDs of the isolated database subnets."
+  value       = aws_subnet.private_db[*].id
+}
+
+output "public_route_table_id" {
+  description = "ID of the public route table."
+  value       = aws_route_table.public.id
+}
+
+output "private_app_route_table_ids" {
+  description = "IDs of private application route tables."
+  value       = aws_route_table.private_app[*].id
+}
+
+output "private_db_route_table_ids" {
+  description = "IDs of isolated database route tables."
+  value       = aws_route_table.private_db[*].id
+}
+
+output "internet_gateway_id" {
+  description = "ID of the Internet Gateway."
+  value       = aws_internet_gateway.main.id
+}
+
+output "nat_gateway_ids" {
+  description = "IDs of the NAT Gateways."
+  value       = aws_nat_gateway.main[*].id
+}
+
+output "db_subnet_group_name" {
+  description = "Name of the database subnet group."
+  value       = aws_db_subnet_group.main.name
+}
+
+output "vpc_flow_log_id" {
+  description = "ID of the VPC Flow Log when enabled."
+  value       = try(aws_flow_log.main[0].id, null)
+}
+
+output "vpc_flow_log_group_name" {
+  description = "CloudWatch Log Group used by VPC Flow Logs."
+  value       = try(aws_cloudwatch_log_group.vpc_flow_logs[0].name, null)
+}

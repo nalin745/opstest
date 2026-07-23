@@ -1,0 +1,6 @@
+project_name    = "rightmo-devops-assessment"
+repository_name = "rightmo-devops-assessment"
+aws_region      = "us-east-1"
+
+state_bucket_force_destroy                 = false
+state_noncurrent_version_retention_days    = 90

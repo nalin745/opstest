@@ -203,8 +203,11 @@ module "github_oidc" {
   aws_account_id = data.aws_caller_identity.current.account_id
   aws_region     = var.aws_region
 
-  github_owner            = var.github_owner
-  github_repository       = var.github_repository
+  github_owner         = var.github_owner
+  github_owner_id      = var.github_owner_id
+  github_repository    = var.github_repository
+  github_repository_id = var.github_repository_id
+
   github_environment_name = var.github_environment_name
 
   create_oidc_provider       = var.create_github_oidc_provider
@@ -215,15 +218,49 @@ module "github_oidc" {
   ecs_cluster_arn = module.ecs_cluster.cluster_arn
   ecs_service_arn = module.ecs_service.service_arn
 
-  task_definition_family = (
-    module.ecs_service.task_definition_family
+  task_definition_family = module.ecs_service.task_definition_family
+
+  task_execution_role_arn = module.ecs_service.task_execution_role_arn
+  task_role_arn           = module.ecs_service.task_role_arn
+
+  common_tags = {
+    Owner      = "Nalin Ranasinghe"
+    Assessment = "Senior DevOps Engineer"
+  }
+}
+
+module "observability" {
+  source = "../../modules/observability"
+
+  project_name = var.project_name
+  environment  = var.environment
+  aws_region   = var.aws_region
+
+  ecs_cluster_name = module.ecs_cluster.cluster_name
+  ecs_service_name = module.ecs_service.service_name
+
+  alb_arn_suffix = (
+    module.alb.load_balancer_arn_suffix
   )
 
-  task_execution_role_arn = (
-    module.ecs_service.task_execution_role_arn
+  target_group_arn_suffix = (
+    module.alb.target_group_arn_suffix
   )
 
-  task_role_arn = module.ecs_service.task_role_arn
+  application_log_group_name = (
+    module.ecs_service.application_log_group_name
+  )
+
+  alert_email_addresses = var.alert_email_addresses
+
+  cpu_alarm_threshold             = 80
+  memory_alarm_threshold          = 85
+  target_5xx_threshold            = 5
+  response_time_threshold_seconds = 2
+  minimum_healthy_host_count      = 1
+
+  alarm_period_seconds     = 60
+  alarm_evaluation_periods = 2
 
   common_tags = {
     Owner      = "Nalin Ranasinghe"
@@ -231,6 +268,7 @@ module "github_oidc" {
   }
 
   depends_on = [
-    module.ecs_service
+    module.ecs_service,
+    module.alb
   ]
 }

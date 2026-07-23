@@ -131,3 +131,19 @@ variable "existing_github_oidc_provider_arn" {
   type        = string
   default     = null
 }
+
+variable "github_owner_id" {
+  description = "Immutable GitHub owner ID."
+  type        = string
+}
+
+variable "github_repository_id" {
+  description = "Immutable GitHub repository ID."
+  type        = string
+}
+
+variable "alert_email_addresses" {
+  description = "Email addresses receiving development operational alerts."
+  type        = set(string)
+  default     = []
+}

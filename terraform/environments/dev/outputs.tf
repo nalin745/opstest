@@ -122,3 +122,15 @@ output "github_oidc_subject" {
   description = "GitHub identity permitted to assume the AWS deployment role."
   value       = module.github_oidc.github_oidc_subject
 }
+
+
+output "cloudwatch_dashboard_name" {
+  description = "Development CloudWatch dashboard name."
+  value       = module.observability.dashboard_name
+}
+
+
+output "cloudwatch_alarm_names" {
+  description = "Development CloudWatch alarm names."
+  value       = module.observability.alarm_names
+}
