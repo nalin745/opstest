@@ -1,0 +1,41 @@
+Architecture descision records
+
+
+
+1. Amazon ECS with AWS Fargate will be used as the primary container orchestration
+platform.
+
+	- ecs fargate - no ec2 worker nodes management overhead
+	- native integrations and auto scaling
+	- not going with EKS reduce cost and operational complexity
+	
+	
+2. dedicated vpc for each environment with three subnet tiers, public , private and database
+
+3. Terraform state will be stored in a dedicated Amazon S3 bucket
+  -  Native S3 state locking
+  -s3 versioning
+	- Centralized state storage
+	- Protection against concurrent state writes
+	- Recovery from accidental state modification 
+	
+4 . cloudwatch as primary monitoring
+  -  native aws integration 
+  - no additional infrastructure but less flexible than grafana
+  
+5. Security secret management 
+	- aws secret manager
+	- Github secrets
+	- image scanning using trivy
+	- least priviledges using iam 
+	- security groups 
+	
+6- auto scaling 
+ - use ecs services horizonal auto scaling 
+ - fargate 
+ 
+ 7. Disaster recovery 
+ 
+  - Infrasturcture provisioning using terraform 
+  - container images to ECR 
+  - Github repostiory for the code versioning
