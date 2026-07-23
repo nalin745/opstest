@@ -1,0 +1,245 @@
+name: Build and Push Application Image
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - main
+
+    paths:
+      - "app/**"
+      - ".github/workflows/build-push-image.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: build-push-development
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+
+jobs:
+  build-and-push:
+    name: Build, Scan and Push
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    environment:
+      name: development
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate workflow variables
+        env:
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+        run: |
+          set -Eeuo pipefail
+
+          missing=0
+
+          for variable_name in \
+            AWS_REGION \
+            AWS_ROLE_ARN \
+            ECR_REPOSITORY
+          do
+            if [[ -z "${!variable_name:-}" ]]; then
+              echo "::error::${variable_name} is missing."
+              missing=1
+            fi
+          done
+
+          if [[ "${missing}" -eq 1 ]]; then
+            exit 1
+          fi
+
+          echo "AWS region: ${AWS_REGION}"
+          echo "ECR repository: ${ECR_REPOSITORY}"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.1.1
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: github-image-build-${{ github.run_id }}
+          mask-aws-account-id: true
+
+      - name: Confirm AWS identity
+        run: |
+          aws sts get-caller-identity
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          mask-password: true
+
+      - name: Create image metadata
+        id: image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          set -Eeuo pipefail
+
+          short_sha="${GITHUB_SHA::12}"
+          image_tag="sha-${short_sha}"
+          image_uri="${ECR_REGISTRY}/${ECR_REPOSITORY}:${image_tag}"
+
+          echo "image_tag=${image_tag}" >> "${GITHUB_OUTPUT}"
+          echo "image_uri=${image_uri}" >> "${GITHUB_OUTPUT}"
+          echo "build_date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "${GITHUB_OUTPUT}"
+
+          echo "Image URI: ${image_uri}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image for testing
+        uses: docker/build-push-action@v7
+        with:
+          context: app
+          file: app/Dockerfile
+          load: true
+          push: false
+          tags: ${{ steps.image.outputs.image_uri }}
+          build-args: |
+            APP_VERSION=${{ steps.image.outputs.image_tag }}
+            BUILD_DATE=${{ steps.image.outputs.build_date }}
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Inspect image
+        run: |
+          docker image inspect \
+            "${{ steps.image.outputs.image_uri }}" \
+            --format 'Image={{.RepoTags}} User={{.Config.User}}'
+
+      - name: Verify configured non-root user
+        run: |
+          set -Eeuo pipefail
+
+          configured_user="$(
+            docker image inspect \
+              "${{ steps.image.outputs.image_uri }}" \
+              --format '{{.Config.User}}'
+          )"
+
+          echo "Configured container user: ${configured_user}"
+
+          if [[ -z "${configured_user}" ||
+                "${configured_user}" == "0" ||
+                "${configured_user}" == "root" ]]; then
+            echo "::error::The container image is configured to run as root."
+            exit 1
+          fi
+
+      - name: Start hardened test container
+        run: |
+          docker run \
+            --detach \
+            --name rightmo-image-test \
+            --publish 18080:8080 \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            "${{ steps.image.outputs.image_uri }}"
+
+      - name: Wait for application health
+        run: |
+          set -Eeuo pipefail
+
+          for attempt in {1..30}; do
+            if response="$(
+              curl \
+                --silent \
+                --show-error \
+                --fail \
+                http://127.0.0.1:18080/health
+            )"; then
+              echo "${response}"
+              echo "Container health check passed."
+              exit 0
+            fi
+
+            echo "Waiting for application: ${attempt}/30"
+            sleep 2
+          done
+
+          echo "::error::Application did not become healthy."
+          docker logs rightmo-image-test
+          exit 1
+
+      - name: Verify runtime user
+        run: |
+          set -Eeuo pipefail
+
+          runtime_uid="$(
+            docker exec rightmo-image-test id -u
+          )"
+
+          echo "Runtime UID: ${runtime_uid}"
+
+          if [[ "${runtime_uid}" == "0" ]]; then
+            echo "::error::The running container is using root."
+            exit 1
+          fi
+
+      - name: Stop test container
+        if: always()
+        run: |
+          docker logs rightmo-image-test || true
+          docker rm --force rightmo-image-test || true
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.image.outputs.image_uri }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+
+      - name: Push immutable image to ECR
+        run: |
+          set -Eeuo pipefail
+
+          docker push "${{ steps.image.outputs.image_uri }}"
+
+      - name: Verify image in ECR
+        env:
+          IMAGE_TAG: ${{ steps.image.outputs.image_tag }}
+        run: |
+          set -Eeuo pipefail
+
+          aws ecr describe-images \
+            --repository-name "${ECR_REPOSITORY}" \
+            --image-ids imageTag="${IMAGE_TAG}" \
+            --query 'imageDetails[0].{
+              Digest:imageDigest,
+              Tags:imageTags,
+              Size:imageSizeInBytes,
+              PushedAt:imagePushedAt
+            }' \
+            --output json
+
+      - name: Create build summary
+        run: |
+          {
+            echo "## Container image"
+            echo
+            echo "| Item | Value |"
+            echo "|---|---|"
+            echo "| Commit | \`${GITHUB_SHA}\` |"
+            echo "| Image tag | \`${{ steps.image.outputs.image_tag }}\` |"
+            echo "| Image URI | \`${{ steps.image.outputs.image_uri }}\` |"
+            echo "| Environment | \`development\` |"
+          } >> "${GITHUB_STEP_SUMMARY}"
