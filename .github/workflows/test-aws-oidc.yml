@@ -1,0 +1,45 @@
+name: Test AWS OIDC
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  test-oidc:
+    name: Test AWS Authentication
+    runs-on: ubuntu-latest
+
+    environment:
+      name: development
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.1.1
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: github-oidc-test-${{ github.run_id }}
+          mask-aws-account-id: true
+
+      - name: Show caller identity
+        run: |
+          aws sts get-caller-identity
+
+      - name: Read ECS service
+        env:
+          ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+          ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+        run: |
+          aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'services[0].{
+              Status:status,
+              Desired:desiredCount,
+              Running:runningCount,
+              TaskDefinition:taskDefinition
+            }' \
+            --output json
